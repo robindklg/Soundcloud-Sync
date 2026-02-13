@@ -120,7 +120,8 @@ def valider_config(self, token, path):
                 "musiques": [],
                 "albums": [],
                 "playlists": [],
-                "artistes": []
+                "artistes": [],
+                "likes": []
             }
             utils.write_json_file(json_path, json_data)
         config['GLOBAL']['LOCAL_PATH'] = path
