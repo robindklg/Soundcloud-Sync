@@ -3,16 +3,16 @@
 import os
 import json
 import configparser
-import re
 from pathlib import Path
 import shutil
+import requests
 
 from PyQt6 import QtWidgets, QtGui, QtCore
 import soundcloud
 
 
 CONFIG_PATH = Path(os.getcwd()).resolve() / "config.conf"
-VERSION = "1.1"
+VERSION = "1.2"
 
 
 def fenetre_info(titre, message, window_object=None):
@@ -22,7 +22,7 @@ def fenetre_info(titre, message, window_object=None):
     window_message.setText(message)
     window_message.setWindowTitle(titre)
     window_message.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok)
-    window_message.exec()
+    window_message.exec() 
 
 
 def remplacer_caract_spec(chaine):
@@ -58,7 +58,8 @@ def load_json_file(json_path):
             "musiques": [],
             "albums": [],
             "playlists": [],
-            "artistes": []
+            "artistes": [],
+            "likes": [],
         }
         with open(json_path, 'w') as file:
             json.dump(json_data, file, indent=4)
@@ -161,74 +162,79 @@ def actualiser_interface(object_window):
     """ Actualise les éléments affichés. """
 
     # Récupération des données et mise à jour de la barre de status.
-    config, json_path, json_data, sc_object = recuperer_parametres()
+    try:
+        config, json_path, json_data, sc_object = recuperer_parametres()
+    except requests.exceptions.ConnectionError as e:
+        print(f"Erreur: Connexion impossible ({e})")
+        raise ConnectionError("Connexion impossible")
     arborescence, nb_total_file = load_local_files(config["GLOBAL"]["LOCAL_PATH"])
     object_window.label_nb_fichiers.setText(f"Nombre de fichiers téléchargés: {nb_total_file}")
     object_window.label_compte.setText(f"Connecté avec le compte de {sc_object.get_me().username}")
 
     object_window.table_elements.setRowCount(0)
-    # Mise à jour de chaque musique seule du tableau.
-    for track in json_data["musiques"]:
+    # Mise à jour de chaque élément playlist du tableau.
+    for playlist in json_data["playlists"]:
         row_position = object_window.table_elements.rowCount()
+        nom_playlist = str(Path(playlist[1]).name)
         object_window.table_elements.insertRow(row_position)
-        object_window.table_elements.setItem(row_position, 1, QtWidgets.QTableWidgetItem(track[0][8:]))
-        object_window.table_elements.setItem(row_position, 0, QtWidgets.QTableWidgetItem(track[1]))
-        if track[1] in arborescence["Musiques"]:
-            definir_status_element(object_window, row_position, "Musique téléchargée", "green")
+        object_window.table_elements.setItem(row_position, 1, QtWidgets.QTableWidgetItem(playlist[0][8:]))
+        object_window.table_elements.setItem(row_position, 0, QtWidgets.QTableWidgetItem(playlist[1]))
+        # Mise à jour du status de la synchronisation de l'élément.
+        if row_position in object_window.synchros_en_cours:
+            definir_status_element(object_window, row_position,f"synchronisation en cours...", "orange")
         else:
-            definir_status_element(object_window, row_position,
-                                   "Musiques non téléchargée", "red")
+            try:
+                nb_titres_playlist_sc = len(sc_object.resolve(playlist[0]).tracks)
+            except AttributeError:
+                supprimer_element(object_window, row_position, json_path)
+            else:
+                if not nom_playlist in arborescence["Playlists"]:
+                    status = QtWidgets.QTableWidgetItem("0 musiques téléchargées")
+                    status.setForeground(QtGui.QColor("red"))
+                    definir_status_element(object_window, row_position, f"0/{nb_titres_playlist_sc} musiques téléchargées",
+                                           "red")
+                else:
+                    nb_fichiers_telecharges = len(arborescence["Playlists"][nom_playlist])
+                    if nb_fichiers_telecharges == nb_titres_playlist_sc:
+                        definir_status_element(object_window, row_position,
+                                               f"{nb_titres_playlist_sc}/{nb_titres_playlist_sc} musiques téléchargées",
+                                               "green")
+                    else:
+                        definir_status_element(object_window, row_position, f"{nb_fichiers_telecharges}"
+                                                                            f"/{nb_titres_playlist_sc} musiques téléchargées",
+                                               "orange")
     # Mise à jour de chaque élément albums du tableau.
     for album in json_data["albums"]:
         nom_album = str(Path(album[1]).name)
         row_position = object_window.table_elements.rowCount()
         object_window.table_elements.insertRow(row_position)
         object_window.table_elements.setItem(row_position, 1, QtWidgets.QTableWidgetItem(album[0][8:]))
-        object_window.table_elements.setItem(row_position, 0,
-                                    QtWidgets.QTableWidgetItem(album[1]))
+        object_window.table_elements.setItem(row_position, 0, QtWidgets.QTableWidgetItem(album[1]))
         # Mise à jour du status de la synchronisation de l'élément.
-        try:
-            nb_titres_album_sc = len(sc_object.resolve(album[0]).tracks)
-        except AttributeError:
-            supprimer_element(object_window, row_position, json_path)
+        if row_position in object_window.synchros_en_cours:
+            definir_status_element(object_window, row_position,f"synchronisation en cours...",
+                                   "orange")
         else:
-            if not nom_album in arborescence["Albums"]:
-                status = QtWidgets.QTableWidgetItem("0 musiques téléchargées")
-                status.setForeground(QtGui.QColor("red"))
-                definir_status_element(object_window, row_position, f"0/{nb_titres_album_sc} musiques téléchargées", "red")
+            try:
+                nb_titres_album_sc = len(sc_object.resolve(album[0]).tracks)
+            except AttributeError:
+                supprimer_element(object_window, row_position, json_path)
             else:
-                nb_fichiers_telecharges = len(arborescence["Albums"][nom_album])
-                if nb_fichiers_telecharges == nb_titres_album_sc:
-                    definir_status_element(object_window, row_position,
-                                           f"{nb_titres_album_sc}/{nb_titres_album_sc} musiques téléchargées", "green")
+                if not nom_album in arborescence["Albums"]:
+                    status = QtWidgets.QTableWidgetItem("0 musiques téléchargées")
+                    status.setForeground(QtGui.QColor("red"))
+                    definir_status_element(object_window, row_position, f"0/{nb_titres_album_sc} musiques téléchargées",
+                                           "red")
                 else:
-                    definir_status_element(object_window, row_position, f"{nb_fichiers_telecharges}"
-                                                               f"/{nb_titres_album_sc} musiques téléchargées", "orange")
-    # Mise à jour de chaque élément playlist du tableau.
-    for playlist in json_data["playlists"]:
-        nom_playlist = str(Path(playlist[1]).name)
-        row_position = object_window.table_elements.rowCount()
-        object_window.table_elements.insertRow(row_position)
-        object_window.table_elements.setItem(row_position, 1, QtWidgets.QTableWidgetItem(playlist[0][8:]))
-        object_window.table_elements.setItem(row_position, 0, QtWidgets.QTableWidgetItem(playlist[1]))
-        # Mise à jour du status de la synchronisation de l'élément.
-        try:
-            nb_titres_playlist_sc = len(sc_object.resolve(playlist[0]).tracks)
-        except AttributeError:
-            supprimer_element(object_window, row_position, json_path)
-        else:
-            if not nom_playlist in arborescence["Playlists"]:
-                status = QtWidgets.QTableWidgetItem("0 musiques téléchargées")
-                status.setForeground(QtGui.QColor("red"))
-                definir_status_element(object_window, row_position,f"0/{nb_titres_playlist_sc} musiques téléchargées", "red")
-            else:
-                nb_fichiers_telecharges = len(arborescence["Playlists"][nom_playlist])
-                if nb_fichiers_telecharges == nb_titres_playlist_sc:
-                    definir_status_element(object_window, row_position,
-                                           f"{nb_titres_playlist_sc}/{nb_titres_playlist_sc} musiques téléchargées", "green")
-                else:
-                    definir_status_element(object_window, row_position,f"{nb_fichiers_telecharges}"
-                                           f"/{nb_titres_playlist_sc} musiques téléchargées", "orange")
+                    nb_fichiers_telecharges = len(arborescence["Albums"][nom_album])
+                    if nb_fichiers_telecharges == nb_titres_album_sc:
+                        definir_status_element(object_window, row_position,
+                                               f"{nb_titres_album_sc}/{nb_titres_album_sc} musiques téléchargées",
+                                               "green")
+                    else:
+                        definir_status_element(object_window, row_position, f"{nb_fichiers_telecharges}"
+                                                                   f"/{nb_titres_album_sc} musiques téléchargées",
+                                               "orange")
     # Mise à jour de chaque élément artist du tableau.
     for artiste in json_data["artistes"]:
         nom_artiste = str(Path(artiste[1]).name)
@@ -237,19 +243,69 @@ def actualiser_interface(object_window):
         object_window.table_elements.setItem(row_position, 1, QtWidgets.QTableWidgetItem(artiste[0][8:]))
         object_window.table_elements.setItem(row_position, 0, QtWidgets.QTableWidgetItem(artiste[1]))
         # Mise à jour du status de la synchronisation de l'élément.
-        nb_titres_artist_sc = len(list(sc_object.get_user_tracks(sc_object.resolve(artiste[0]).id)))
-        if not nom_artiste in arborescence["Artistes"]:
-            status = QtWidgets.QTableWidgetItem("0 musiques téléchargées")
-            status.setForeground(QtGui.QColor("red"))
-            definir_status_element(object_window, row_position, f"0/{nb_titres_artist_sc} musiques téléchargées", "red")
+        if row_position in object_window.synchros_en_cours:
+            definir_status_element(object_window, row_position,f"synchronisation en cours...", "orange")
         else:
-            nb_fichiers_telecharges = len(arborescence["Artistes"][nom_artiste])
-            if nb_fichiers_telecharges == nb_titres_artist_sc:
-                definir_status_element(object_window, row_position,
-                                       f"{nb_titres_artist_sc}/{nb_titres_artist_sc} musiques téléchargées", "green")
+            nb_titres_artist_sc = sc_object.resolve(artiste[0]).track_count
+            if not nom_artiste in arborescence["Artistes"]:
+                status = QtWidgets.QTableWidgetItem("0 musiques téléchargées")
+                status.setForeground(QtGui.QColor("red"))
+                definir_status_element(object_window, row_position, f"0/{nb_titres_artist_sc} musiques téléchargées", "red")
             else:
-                definir_status_element(object_window, row_position, f"{nb_fichiers_telecharges}"
-                                                           f"/{nb_titres_artist_sc} musiques téléchargées", "orange")
+                nb_fichiers_telecharges = len(arborescence["Artistes"][nom_artiste])
+                if nb_fichiers_telecharges == nb_titres_artist_sc:
+                    definir_status_element(object_window, row_position,
+                                           f"{nb_titres_artist_sc}/{nb_titres_artist_sc} musiques téléchargées", "green")
+                else:
+                    definir_status_element(object_window, row_position, f"{nb_fichiers_telecharges}"
+                                                               f"/{nb_titres_artist_sc} musiques téléchargées", "orange")
+    # Mise à jour des likes de profils sur le tableau.
+    for profil in json_data["likes"]:
+        nom_profil = str(Path(profil[1]).name)
+        row_position = object_window.table_elements.rowCount()
+        object_window.table_elements.insertRow(row_position)
+        object_window.table_elements.setItem(row_position, 1, QtWidgets.QTableWidgetItem(profil[0][8:]))
+        object_window.table_elements.setItem(row_position, 0, QtWidgets.QTableWidgetItem(profil[1]))
+        # Mise à jour du status de la synchronisation de l'élément.
+        if row_position in object_window.synchros_en_cours:
+            definir_status_element(object_window, row_position,f"synchronisation en cours...", "orange")
+        else:
+            nb_titres_likes_sc = 0
+            try:
+                for like in list(sc_object.get_user_likes(sc_object.resolve(profil[0]).id)):
+                    if isinstance(like, soundcloud.TrackLike):
+                        nb_titres_likes_sc += 1
+            except AttributeError:
+                supprimer_element(object_window, row_position, json_path)
+            else:
+                if not nom_profil in arborescence["Likes"]:
+                    status = QtWidgets.QTableWidgetItem("0 musiques téléchargées")
+                    status.setForeground(QtGui.QColor("red"))
+                    definir_status_element(object_window, row_position, f"0/{nb_titres_likes_sc} musiques téléchargées",
+                                           "red")
+                else:
+                    nb_fichiers_telecharges = len(arborescence["Likes"][nom_profil])
+                    if nb_fichiers_telecharges == nb_titres_likes_sc:
+                        definir_status_element(object_window, row_position,
+                                               f"{nb_titres_likes_sc}/{nb_titres_likes_sc} musiques téléchargées",
+                                               "green")
+                    else:
+                        definir_status_element(object_window, row_position, f"{nb_fichiers_telecharges}"
+                                                f"/{nb_titres_likes_sc} musiques téléchargées","orange")
+    # Mise à jour de chaque musique seule du tableau.
+    for track in json_data["musiques"]:
+        row_position = object_window.table_elements.rowCount()
+        object_window.table_elements.insertRow(row_position)
+        object_window.table_elements.setItem(row_position, 1, QtWidgets.QTableWidgetItem(track[0][8:]))
+        object_window.table_elements.setItem(row_position, 0, QtWidgets.QTableWidgetItem(track[1]))
+        if row_position in object_window.synchros_en_cours:
+            definir_status_element(object_window, row_position,f"synchronisation en cours...", "orange")
+        else:
+            if track[1] in arborescence["Musiques"]:
+                definir_status_element(object_window, row_position, "Musique téléchargée", "green")
+            else:
+                definir_status_element(object_window, row_position,
+                                       "Musiques non téléchargée", "red")
 
 
 class ActualiserAffichage(QtCore.QThread):
@@ -269,19 +325,20 @@ class ActualiserAffichage(QtCore.QThread):
 def supprimer_element(object_window, index, json_path):
     """ Supprimer un élément. """
 
+    url = object_window.table_elements.item(index, 1).text()
     object_window.table_elements.removeRow(index)
     json_content = load_json_file(json_path)
 
-    compteur = 0
-    for categorie in [cat for cat in json_content]:
-        if compteur + len(json_content[categorie]) > index:
-            index_local = index - compteur
-            if 0 <= index_local < len(json_content[categorie]):
+    for cat in json_content:
+        cat_id = 0
+        for element in json_content[cat]:
+            if element[0].endswith(url):
                 if object_window.auto_download_action.isChecked():
                     # Suppréssion du fichier ou du dossier local.
                     config = configparser.ConfigParser()
                     config.read(CONFIG_PATH)
-                    path_to_remove = Path(config["GLOBAL"]["LOCAL_PATH"]) / Path(json_content[categorie][index_local][1][1:])
+                    path_to_remove = Path(config["GLOBAL"]["LOCAL_PATH"]) / Path(
+                        json_content[cat][cat_id][1][1:])
                     if path_to_remove.is_dir():
                         shutil.rmtree(path_to_remove)
                     else:
@@ -289,10 +346,10 @@ def supprimer_element(object_window, index, json_path):
                             if fichier.is_file() and fichier.stem == path_to_remove.name:
                                 fichier.unlink()
                                 break
-                # Suppréssion de l'élément dans le fichier JSON.
-                del json_content[categorie][index_local]
+
+                del json_content[cat][cat_id]
                 break
-        compteur += len(json_content[categorie])
+            cat_id += 1
 
     write_json_file(json_path, json_content)
 
